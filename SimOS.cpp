@@ -10,7 +10,7 @@
 */
 
 SimOS::SimOS(int numberOfDisks, unsigned long long amountOfRAM, unsigned long long sizeOfOS)
-    : numDisks(numberOfDisks), totalRAM(amountOfRAM){
+    : numDisks(numberOfDisks), totalRAM(amountOfRAM), nextPID(2){
         // 1. Initialize disk structures
         diskQueues.resize(numDisks);  // FIFO queues for each disk
         disks.resize(numDisks);
@@ -35,9 +35,9 @@ SimOS::SimOS(int numberOfDisks, unsigned long long amountOfRAM, unsigned long lo
 
 bool SimOS::NewProcess(unsigned long long size, int priority) {
     unsigned long long addr = 0;
-    if (!findWorstFit(size, addr)) {
-        return false; // No space
-    }
+    // if (!findWorstFit(size, addr)) {
+    //     return false; // No space
+    // }
 
     // Create memory block
     MemoryItem memItem{addr, size, nextPID};
@@ -51,8 +51,8 @@ bool SimOS::NewProcess(unsigned long long size, int priority) {
     processes[nextPID] = pcb;
 
     // Schedule process
-    if (cpuPID == 1 || processes[cpuPID].priority < priority) {
-        if (cpuPID != 1) {
+    if (cpuPID == 1 || processes[cpuPID].priority < priority || cpuPID == NO_PROCESS) {
+        if (cpuPID != NO_PROCESS) {
             readyQueue.push({cpuPID, processes[cpuPID].priority});
         }
         cpuPID = nextPID;
@@ -60,7 +60,7 @@ bool SimOS::NewProcess(unsigned long long size, int priority) {
         readyQueue.push({nextPID, priority});
     }
 
-    ++nextPID;
+    this->nextPID ++;
     return true;
 }
 
@@ -161,22 +161,6 @@ bool SimOS::SimFork() {
 void SimOS::SimExit() {
     // TODO: Handle process exit, memory cleanup, zombie handling
 
-    int parentID = processes[exitingPID].parentPID;
-if (parentID != NO_PROCESS && processes.find(parentID) != processes.end()) {
-    PCB& parent = processes[parentID];
-    if (parent.isWaiting) {
-        parent.isWaiting = false;
-
-        if (cpuPID == NO_PROCESS || cpuPID == 1 || processes[cpuPID].priority < parent.priority) {
-            if (cpuPID != 1 && cpuPID != NO_PROCESS) {
-                readyQueue.push({cpuPID, processes[cpuPID].priority});
-            }
-            cpuPID = parentID;
-        } else {
-            readyQueue.push({parentID, parent.priority});
-        }
-    }
-}
 }
 
 void SimOS::removeProcessEverywhere(int pid) {
@@ -294,7 +278,6 @@ void SimOS::DiskReadRequest(int diskNumber, std::string fileName) {
     request.fileName = fileName;
 
     // Remove the process from CPU
-    int requestingPID = cpuPID;
     cpuPID = NO_PROCESS; //PID of '-1'
 
     // If the disk is idle, serve the request immediately
@@ -329,11 +312,11 @@ void SimOS::DiskJobCompleted(int diskNumber) {
 
         // Compare with current CPU process
         if (cpuPID == 1 || processes[cpuPID].priority < priority || cpuPID == NO_PROCESS) {
-            //Add current Process into readyQueue as long as not OS process, then change the respective process on the CPU
-            if (cpuPID != 1 || cpuPID == NO_PROCESS) {
+            //Add current Process into readyQueue as long as not NO_PROCESS, then change the respective process on the CPU
+            if (cpuPID == 1) {
                 readyQueue.push({cpuPID, processes[cpuPID].priority});
             }
-            cpuPID = pid;  // Higher priority preempts
+            cpuPID = pid;  // Put to CPU if higher Priority
         } else {
             readyQueue.push({pid, priority});  // Goes back to ready queue
         }
@@ -370,7 +353,7 @@ std::vector<int> SimOS::GetReadyQueue() {
         result.push_back(tempQueue.top().first);  // Extract PID
         tempQueue.pop();
     }
-
+    std::cout << result.size() << std::endl;
     return result;
 }
 

@@ -53,7 +53,7 @@ public:
     int GetCPU();
     std::vector<int> GetReadyQueue();
     MemoryUse GetMemory();
-    void SimOS::sortMemoryByAddress(MemoryUse& memList);
+    void sortMemoryByAddress(MemoryUse& memList);
     FileReadRequest GetDisk(int diskNumber);
     std::queue<FileReadRequest> GetDiskQueue(int diskNumber);
 
@@ -66,7 +66,7 @@ private:
     std::vector<std::queue<FileReadRequest>> diskQueues; //all diskQueues
     std::vector<FileReadRequest> disks; //current process on disc
     std::map<int, PCB> processes; // Maps PID to PCB struct
-    int nextPID = 2;
+    int nextPID;
 
     
     struct ComparePriority {

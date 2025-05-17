@@ -1,0 +1,7 @@
+# --------------------------------
+# Optional: Ignore test files (if you don't want to track them)
+# --------------------------------
+# Uncomment if you want these ignored
+main.cpp
+sim_test_file.cpp
+runme
