@@ -45,6 +45,7 @@ public:
     void mergeMemoryHoles();
     bool SimFork();
     void SimExit();
+    void cascadingTerminate(int pid);
     void removeProcessEverywhere(int pid);
     void SimWait();
     void DiskReadRequest(int diskNumber, std::string fileName);
@@ -56,6 +57,7 @@ public:
     void sortMemoryByAddress(MemoryUse& memList);
     FileReadRequest GetDisk(int diskNumber);
     std::queue<FileReadRequest> GetDiskQueue(int diskNumber);
+    std::vector<MemoryItem> GetMemoryHoles();
 
 private:
     int cpuPID = NO_PROCESS; 

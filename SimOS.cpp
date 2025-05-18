@@ -10,20 +10,29 @@
 */
 
 SimOS::SimOS(int numberOfDisks, unsigned long long amountOfRAM, unsigned long long sizeOfOS)
-    : numDisks(numberOfDisks), totalRAM(amountOfRAM), nextPID(2){
-        // 1. Initialize disk structures
-        diskQueues.resize(numDisks);  // FIFO queues for each disk
-        disks.resize(numDisks);
+    : numDisks(numberOfDisks), totalRAM(amountOfRAM), nextPID(2) {
     
-        // 2. Create the OS process (PID 1)
-        MemoryItem osMemory;
-        osMemory.PID = 1;
-        osMemory.itemAddress = 0;
-        osMemory.itemSize = sizeOfOS;
+    // 1. Initialize disk structures
+    diskQueues.resize(numDisks);  // FIFO queues for each disk
+    disks.resize(numDisks);
     
-        memory.push_back(osMemory); // Add OS memory to memory use vector
-        
-        cpuPID = 1; // OS starts on CPU
+    // 2. Create the OS process (PID 1)
+    MemoryItem osMemory;
+    osMemory.PID = 1;
+    osMemory.itemAddress = 0;
+    osMemory.itemSize = sizeOfOS;
+    
+    memory.push_back(osMemory); // OS in memory
+    cpuPID = 1;                 // OS starts on CPU
+
+    // 3. Create the first memory hole (after the OS)
+    if (sizeOfOS < totalRAM) {
+        MemoryItem hole;
+        hole.itemAddress = sizeOfOS;
+        hole.itemSize = totalRAM - sizeOfOS;
+        hole.PID = NO_PROCESS;  // Empty PID because this is the memory hole
+        memoryHoles.push_back(hole);
+    }
 }
 
 /**
@@ -35,9 +44,9 @@ SimOS::SimOS(int numberOfDisks, unsigned long long amountOfRAM, unsigned long lo
 
 bool SimOS::NewProcess(unsigned long long size, int priority) {
     unsigned long long addr = 0;
-    // if (!findWorstFit(size, addr)) {
-    //     return false; // No space
-    // }
+    if (!findWorstFit(size, addr)) {
+        return false; // No space
+    }
 
     // Create memory block
     MemoryItem memItem{addr, size, nextPID};
@@ -64,6 +73,13 @@ bool SimOS::NewProcess(unsigned long long size, int priority) {
     return true;
 }
 
+/**
+@param: size - the memory size requested by the process
+@param: addressOut - reference to store the memory address where the block will be allocated
+@return: true if a suitable memory hole was found and updated; false if insufficient space
+@post: Finds the worst-fitting memory hole and updates it to reflect the allocation
+*/
+
 bool SimOS::findWorstFit(unsigned long long size, unsigned long long& addressOut) {
     mergeMemoryHoles();
     unsigned long long largestSize = 0;
@@ -78,10 +94,6 @@ bool SimOS::findWorstFit(unsigned long long size, unsigned long long& addressOut
 
     if (index == -1) return false;
 
-    unsigned long long proposedEnd = memoryHoles[index].itemAddress + size;
-    if (proposedEnd > totalRAM) {
-        return false; // would exceed total RAM
-    }
     
     addressOut = memoryHoles[index].itemAddress;
     
@@ -96,12 +108,17 @@ bool SimOS::findWorstFit(unsigned long long size, unsigned long long& addressOut
     return true;
 }
 
+/**
+@post: Merges adjacent memory holes into single larger holes
+       to maintain a clean and accurate representation of free memory
+*/
+
 void SimOS::mergeMemoryHoles() {
     sortMemoryByAddress(memoryHoles);
     
     std::vector<MemoryItem> merged;
     for (int i = 0; i < memoryHoles.size(); ++i) {
-        if (merged.empty() || merged.back().itemAddress + merged.back().itemSize < memoryHoles[i].itemAddress) {
+        if (merged.empty() || merged.back().itemAddress + merged.back().itemSize == memoryHoles[i].itemAddress) {
             merged.push_back(memoryHoles[i]);
         } else {
             // Merge with previous
@@ -117,9 +134,21 @@ void SimOS::mergeMemoryHoles() {
 }
 
 /**
+@param: memList - the vector of memory items to be sorted
+@post: Sorts memory items in increasing order by their memory address
+*/
+
+void SimOS::sortMemoryByAddress(MemoryUse& memList) {
+    std::sort(memList.begin(), memList.end(), [](const MemoryItem& a, const MemoryItem& b) {
+        return a.itemAddress < b.itemAddress;
+    });
+}
+
+/**
 @return: true if the forked child process is created successfully; false if memory is insufficient or the OS is running
 @post: Allocates memory using worst-fit, clones parent's priority/size, creates child PCB, and adds to readyQueue
 */
+
 bool SimOS::SimFork() {
     // Ignore if the OS is running
     if (cpuPID == 1) return false;
@@ -157,11 +186,78 @@ bool SimOS::SimFork() {
     ++nextPID;
     return true;
 }
-// Process exit
-void SimOS::SimExit() {
-    // TODO: Handle process exit, memory cleanup, zombie handling
 
+/**
+@post: Terminates the currently running process (except for the OS). 
+       If the parent is waiting (has called SimWait), the parent resumes execution immediately 
+       and the process is fully removed. If not, the process becomes a zombie.
+       Cascading termination is applied to all descendants of the exiting process.
+*/
+
+void SimOS::SimExit() {
+    if (cpuPID == 1) return;  // OS never exits
+
+    int exitingPID = cpuPID;
+    cpuPID = NO_PROCESS;
+
+    // Recursively terminate children
+    for (int childPID : processes[exitingPID].children) {
+        cascadingTerminate(childPID);
+    }
+
+    int parentID = processes[exitingPID].parentPID;
+
+    if (parentID != NO_PROCESS && processes.find(parentID) != processes.end()) {
+        PCB& parent = processes[parentID];
+
+        if (parent.isWaiting) {
+            // Parent is waiting — clean up immediately and resume it
+            parent.isWaiting = false;
+
+            if (cpuPID == NO_PROCESS || cpuPID == 1 || processes[cpuPID].priority < parent.priority) {
+                if (cpuPID != NO_PROCESS) {
+                    readyQueue.push({cpuPID, processes[cpuPID].priority});
+                }
+                cpuPID = parentID;
+            } else {
+                readyQueue.push({parentID, parent.priority});
+            }
+
+            // Remove exiting process fully
+            removeProcessEverywhere(exitingPID);
+        } else {
+            // Parent has not called wait yet so turn into zombie
+            processes[exitingPID].isZombie = true;
+        }
+    } else {
+        // No parent so just clean up from everywhere
+        removeProcessEverywhere(exitingPID);
+    }
 }
+
+/**
+@param: pid - the process ID to be terminated along with its descendants
+@post: Recursively terminates the specified process and all of its descendants. 
+       Each terminated process is removed from memory, queues, CPU, and process table.
+*/
+
+void SimOS::cascadingTerminate(int pid) {
+    if (processes.find(pid) == processes.end()) return;
+
+    // First recursively kill children
+    for (int child : processes[pid].children) {
+        cascadingTerminate(child);
+    }
+
+    // Remove this process from everywhere
+    removeProcessEverywhere(pid);
+}
+
+/**
+@param: pid - the process ID to be removed from all system structures
+@post: Removes the process from memory, CPU, disk queues, ready queue, and the process table;
+       releases its memory and reassigns the CPU if needed. Updates the memoryhole vector as well
+*/
 
 void SimOS::removeProcessEverywhere(int pid) {
     // 1. Remove from memory
@@ -222,11 +318,23 @@ void SimOS::removeProcessEverywhere(int pid) {
     // 6. Remove from process map
     processes.erase(pid);
 
+    // Resume next highest-priority process
+    if (!readyQueue.empty()) {
+        auto next = readyQueue.top();
+        readyQueue.pop();
+        cpuPID = next.first;
+    }
+
     // 7. Merge updated memory holes
     mergeMemoryHoles();
 }
-//Cascading Termination 
-//Recursion 
+
+/**
+@post: If a zombie child exists, reaps one and resumes the parent.
+       If no zombie child exists, the current process pauses and waits.
+       If waiting, the process is removed from CPU and the next highest-priority process runs.
+       The OS (PID 1) ignores this instruction.
+*/
 
 void SimOS::SimWait() {
     if (cpuPID == 1) return;  // OS ignores wait
@@ -260,6 +368,15 @@ void SimOS::SimWait() {
         cpuPID = next.first;
     }
 }
+
+/**
+@param: diskNumber - the index of the disk the request is targeting
+@param: fileName - the file to be read from disk
+@post: Current CPU process is removed and assigned to the disk or added to the disk's I/O queue.
+       If the disk is free, the request is served immediately; otherwise queued.
+       If a ready process exists, it is moved to the CPU.
+       The OS (PID 1) ignores this instruction.
+*/
 
 void SimOS::DiskReadRequest(int diskNumber, std::string fileName) {
     // Ignore if diskNumber is invalid
@@ -295,6 +412,12 @@ void SimOS::DiskReadRequest(int diskNumber, std::string fileName) {
         cpuPID = next.first;
     }
 }
+
+/**
+@param: diskNumber - the disk that has completed a job
+@post: The completed process returns to the CPU if it has higher priority than the current CPU process;
+       otherwise it goes to the ready queue. The next I/O request in the disk queue (if any) is assigned.
+*/
 
 void SimOS::DiskJobCompleted(int diskNumber) {
     // Check if diskNumber is valid
@@ -357,32 +480,21 @@ std::vector<int> SimOS::GetReadyQueue() {
     return result;
 }
 
-// Get memory usage
+/**
+@return: Returns a vector containing all active memory allocations, including the OS and user processes.
+@post: The returned MemoryUse list reflects the current state of memory; does not include memory holes or zombie processes.
+*/
+
 MemoryUse SimOS::GetMemory() {
-    // MemoryUse filtered;
-    // for (int i = 0; i < memory.size(); i++) {
-    //     MemoryItem item = memory[i];
-    //     std::map<int, PCB>::iterator it = processes.find(item.PID);
-    //     if (item.PID == 1 || (it != processes.end() && !it->second.isZombie)) {
-    //         filtered.push_back(item);
-    //     }
-    // }
-    // sortMemoryByAddress(filtered);
     return memory;
 }
-
-void SimOS::sortMemoryByAddress(MemoryUse& memList) {
-    std::sort(memList.begin(), memList.end(), [](const MemoryItem& a, const MemoryItem& b) {
-        return a.itemAddress < b.itemAddress;
-    });
-}
-
 
 /**
 @param: diskNumber - the index of the disk being queried  
 @return: the FileReadRequest currently being served on that disk  
 @post: returns a default FileReadRequest (PID 0, "") if the disk is idle or diskNumber is invalid
 */
+
 FileReadRequest SimOS::GetDisk(int diskNumber) {
     if (diskNumber < 0 || diskNumber >= static_cast<int>(disks.size())) {
         return FileReadRequest{};  // Invalid disk
@@ -402,9 +514,14 @@ FileReadRequest SimOS::GetDisk(int diskNumber) {
 @return: the I/O queue (FIFO) of the specified disk, starting from the next process to be served  
 @post: returns an empty queue if the diskNumber is invalid
 */
+
 std::queue<FileReadRequest> SimOS::GetDiskQueue(int diskNumber) {
     if (diskNumber < 0 || diskNumber >= static_cast<int>(diskQueues.size())) {
         return std::queue<FileReadRequest>{}; // invalid disk index
     }
     return diskQueues[diskNumber]; // return the actual queue
+}
+
+std::vector<MemoryItem> SimOS::GetMemoryHoles() {
+    return memoryHoles;
 }
